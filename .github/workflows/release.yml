@@ -1,0 +1,85 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  build:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+       include:
+         - configuration: Release_AVX
+           output_dir: Gothic2-GD3D11-#VERSION#_avx2
+         - configuration: Release_G1_AVX
+           output_dir: Gothic1-GD3D11-#VERSION#_avx
+         - configuration: Release
+           output_dir: Gothic2-GD3D11-#VERSION#
+         - configuration: Release_G1
+           output_dir: Gothic1-GD3D11-#VERSION#
+         - configuration: Spacer_NET
+           output_dir: Gothic2-GD3D11-#VERSION#_SpacerNET
+
+    steps:
+    - uses: actions/checkout@v2
+
+    - name: Set tag and directory name env
+      run: |
+        $tagName = $Env:GITHUB_REF -replace 'refs/tags/', ''
+        $dirName = "${{matrix.output_dir}}" -replace '#VERSION#', ${tagName}
+        echo "Tag: ${tagName}"
+        echo "Directory: ${dirName}"
+        echo "RELEASE_VERSION=${tagName}" >> $Env:GITHUB_ENV
+        echo "RELEASE_DIR=${dirName}" >> $Env:GITHUB_ENV
+
+    - name: Add MSBuild to PATH
+      uses: microsoft/setup-msbuild@v1
+
+    - name: Restore NuGet packages
+      working-directory: ${{env.GITHUB_WORKSPACE}}
+      run: nuget restore .
+
+    - name: Build
+      working-directory: ${{env.GITHUB_WORKSPACE}}
+      run: msbuild /p:Configuration=${{matrix.configuration}} .
+
+    - name: Create distribution zip
+      working-directory: ${{env.GITHUB_WORKSPACE}}
+      run: |
+        mkdir "${{env.RELEASE_DIR}}\GD3D11\shaders\CSFFT"
+        Xcopy "D3D11Engine\Shaders\*" "${{env.RELEASE_DIR}}\GD3D11\shaders" /s
+        copy "D3D11Engine\CSFFT\*.hlsl" "${{env.RELEASE_DIR}}\GD3D11\shaders\CSFFT"
+        Xcopy "blobs\data" "${{env.RELEASE_DIR}}\GD3D11\data\" /s
+        Xcopy "blobs\Meshes" "${{env.RELEASE_DIR}}\GD3D11\Meshes\" /s
+        Xcopy "blobs\Textures" "${{env.RELEASE_DIR}}\GD3D11\Textures\" /s
+        Xcopy "blobs\libs\*" "${{env.RELEASE_DIR}}\" /s
+        copy "${{matrix.configuration}}\ddraw.dll" "${{env.RELEASE_DIR}}"
+        cd "${{env.RELEASE_DIR}}"
+        7z a -tzip "..\${{env.RELEASE_DIR}}.zip" -r
+
+    - name: Calculate distribution zip hash
+      working-directory: ${{env.GITHUB_WORKSPACE}}
+      run: |
+        (Get-FileHash "${{env.RELEASE_DIR}}.zip" -Algorithm SHA256).hash | Out-File -FilePath "${{env.RELEASE_DIR}}.zip.sha256"
+        type "${{env.RELEASE_DIR}}.zip.sha256"
+
+    - name: Create github release
+      run: |
+        gh release create ${{env.RELEASE_VERSION}} -p -n "Generated release from GitHub Actions"
+        echo "Ignore 'Validation Failed' results. Expected since only the first job that reaches this step can create the release."
+        exit 0
+      env:
+        GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
+
+    - name: Upload artifacts to github release
+      run: |
+        gh release upload ${{env.RELEASE_VERSION}} "${{env.RELEASE_DIR}}.zip"
+        gh release upload ${{env.RELEASE_VERSION}} "${{env.RELEASE_DIR}}.zip.sha256"
+      env:
+        GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
